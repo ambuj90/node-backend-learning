@@ -1,0 +1,4 @@
+curl -X POST `
+  -H "file-name: uploaded.txt" `
+  --data-binary "@test.txt" `
+  http://localhost:3000/files/upload
