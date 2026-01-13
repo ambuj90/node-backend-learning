@@ -5,78 +5,80 @@ const path = require("path");
 
 const router = express.Router();
 
+const {
+  ValidationError,
+  NotFoundError,
+  FileSizeError,
+} = require("../errors/customErrors");
+
 const BASE_DIR = path.join(__dirname, "..", "fs", "files");
 
+const { addUser, getUsers } = require("../services/userService");
+
 // LIST files
-router.get("/list", async (req, res) => {
+router.get("/list", async (req, res, next) => {
   try {
     const files = await fs.readdir(BASE_DIR);
     res.json({ files });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
-// UPLOAD file with size limit (STREAM)
-router.post("/upload", (req, res) => {
-  const fileName = req.headers["file-name"];
+// UPLOAD file (STREAM + custom errors)
+router.post("/upload", (req, res, next) => {
+  try {
+    const fileName = req.headers["file-name"];
 
-  if (!fileName) {
-    return res.status(400).json({ error: "file-name header missing" });
-  }
-
-  // Prevent path traversal
-  if (fileName.includes("..") || fileName.includes("/")) {
-    return res.status(400).json({ error: "Invalid file name" });
-  }
-
-  const filePath = path.join(BASE_DIR, fileName);
-  const writeStream = fsSync.createWriteStream(filePath);
-
-  let uploadedSize = 0;
-  const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
-  let blocked = false;
-
-  req.on("data", (chunk) => {
-    if (blocked) return;
-
-    uploadedSize += chunk.length;
-
-    if (uploadedSize > MAX_SIZE) {
-      blocked = true;
-      writeStream.destroy();
-      req.destroy();
-
-      return res.status(413).json({ error: "File too large" });
+    if (!fileName) {
+      throw new ValidationError("file-name header is required", "file-name");
     }
-  });
 
-  req.pipe(writeStream);
+    if (fileName.includes("..") || fileName.includes("/")) {
+      throw new ValidationError("Invalid file name", "file-name");
+    }
 
-  writeStream.on("finish", () => {
-    if (!blocked) {
+    const filePath = path.join(BASE_DIR, fileName);
+    const writeStream = fsSync.createWriteStream(filePath);
+
+    let uploadedSize = 0;
+    const MAX_SIZE = 5 * 1024 * 1024;
+
+    req.on("data", (chunk) => {
+      uploadedSize += chunk.length;
+
+      if (uploadedSize > MAX_SIZE) {
+        writeStream.destroy();
+        req.destroy();
+        next(new FileSizeError());
+      }
+    });
+
+    req.pipe(writeStream);
+
+    writeStream.on("finish", () => {
       res.json({ message: "File uploaded successfully" });
-    }
-  });
+    });
 
-  writeStream.on("error", (err) => {
-    if (!blocked) {
-      res.status(500).json({ error: err.message });
-    }
-  });
+    writeStream.on("error", (err) => {
+      next(err);
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // CREATE folder
-router.post("/folder/create", async (req, res) => {
+router.post("/folder/create", async (req, res, next) => {
   try {
     const { name } = req.body;
 
     if (!name) {
-      return res.status(400).json({ error: "Folder name required" });
+      throw new ValidationError("Folder name required", "name");
     }
 
     if (name.includes("..") || name.includes("/")) {
-      return res.status(400).json({ error: "Invalid folder name" });
+      throw new ValidationError("Invalid folder name", "name");
     }
 
     const folderPath = path.join(BASE_DIR, name);
@@ -85,21 +87,19 @@ router.post("/folder/create", async (req, res) => {
     res.json({ message: "Folder created" });
   } catch (err) {
     if (err.code === "EEXIST") {
-      return res.status(409).json({ error: "Folder already exists" });
+      return next(new ValidationError("Folder already exists", "name"));
     }
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
 // RENAME folder
-router.put("/folder/rename", async (req, res) => {
+router.put("/folder/rename", async (req, res, next) => {
   try {
     const { oldName, newName } = req.body;
 
     if (!oldName || !newName) {
-      return res
-        .status(400)
-        .json({ error: "Both oldName and newName required" });
+      throw new ValidationError("Both oldName and newName are required");
     }
 
     if (
@@ -108,7 +108,7 @@ router.put("/folder/rename", async (req, res) => {
       newName.includes("..") ||
       newName.includes("/")
     ) {
-      return res.status(400).json({ error: "Invalid folder name" });
+      throw new ValidationError("Invalid folder name");
     }
 
     const oldPath = path.join(BASE_DIR, oldName);
@@ -118,27 +118,39 @@ router.put("/folder/rename", async (req, res) => {
 
     res.json({ message: "Folder renamed" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
 // DELETE folder
-router.delete("/folder/delete/:name", async (req, res) => {
+router.delete("/folder/delete/:name", async (req, res, next) => {
   try {
     const name = req.params.name;
 
     if (name.includes("..") || name.includes("/")) {
-      return res.status(400).json({ error: "Invalid folder name" });
+      throw new ValidationError("Invalid folder name", "name");
     }
 
     const folderPath = path.join(BASE_DIR, name);
-
-    // recursive + force = safe delete
     await fs.rm(folderPath, { recursive: true, force: true });
 
     res.json({ message: "Folder deleted" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
+  }
+});
+router.post("/users", (req, res, next) => {
+  try {
+    const user = req.body;
+
+    if (!user || !user.name) {
+      throw new ValidationError("User name is required", "name");
+    }
+
+    addUser(user);
+    res.json(getUsers());
+  } catch (err) {
+    next(err);
   }
 });
 
